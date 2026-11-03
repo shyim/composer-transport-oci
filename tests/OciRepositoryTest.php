@@ -13,6 +13,7 @@
 namespace ComposerOci\Tests;
 
 use Composer\Config;
+use Composer\Downloader\TransportException;
 use Composer\IO\NullIO;
 use ComposerOci\OciRepository;
 use Composer\Repository\RepositoryFactory;
@@ -24,7 +25,7 @@ use ComposerOci\OciRegistry;
 class OciRepositoryTest extends TestCase
 {
     /** @param array<string, mixed> $metadata */
-    private function repository(array $metadata = [], bool $corrupt = false, bool $conflict = false): OciRepository
+    private function repository(array $metadata = [], bool $corrupt = false, bool $conflict = false, bool $index = true): OciRepository
     {
         $metadata += ['name' => 'acme/library', 'version' => '1.2.3', 'require' => ['php' => '^8.0']];
         $body = (string) json_encode($metadata);
@@ -35,7 +36,13 @@ class OciRepositoryTest extends TestCase
             'layers' => [$layer],
         ];
         $http = $this->getMockBuilder(HttpDownloader::class)->disableOriginalConstructor()->getMock();
-        $http->method('get')->willReturnCallback(static function (string $url) use ($body, $digest, $manifest, $corrupt, $conflict): Response {
+        $http->method('get')->willReturnCallback(static function (string $url) use ($body, $digest, $manifest, $corrupt, $conflict, $index): Response {
+            if (str_ends_with($url, '/manifests/composer-index')) {
+                self::assertTrue($index, 'Disabled index must not be probed');
+                $e = new TransportException('Not found');
+                $e->setStatusCode(404);
+                throw $e;
+            }
             if (strpos($url, '/tags/list') !== false) {
                 $data = (string) json_encode(['tags' => ['1.2.3', 'latest']]);
             } elseif (strpos($url, '/manifests/') !== false) {
@@ -51,7 +58,10 @@ class OciRepositoryTest extends TestCase
             return new Response(['url' => $url !== '' ? $url : 'https://registry.example'], 200, [], $data);
         });
 
-        return new OciRepository(['url' => 'oci://registry.example/acme/library'], new NullIO(), new Config(), $http);
+        $config = new Config();
+        $config->merge(['config' => ['cache-repo-dir' => sys_get_temp_dir().'/composer-oci-test-cache', 'cache-read-only' => true]]);
+
+        return new OciRepository(['url' => 'oci://registry.example/acme/library', 'index' => $index], new NullIO(), $config, $http);
     }
 
     public function testLoadsMetadataAndDeduplicatesAliases(): void
@@ -81,6 +91,23 @@ class OciRepositoryTest extends TestCase
         $this->expectException(\UnexpectedValueException::class);
         $this->expectExceptionMessage('Conflicting');
         $this->repository([], false, true)->getPackages();
+    }
+    public function testBuildIndexPreservesMetadataAndReferencesArchiveBlobs(): void
+    {
+        $artifact = $this->repository()->buildIndex();
+        $index = json_decode($artifact['config'], true, 512, JSON_THROW_ON_ERROR);
+        $manifest = json_decode($artifact['manifest'], true, 512, JSON_THROW_ON_ERROR);
+        self::assertSame(1, $index['schemaVersion']);
+        self::assertSame('acme/library', $index['packages'][0]['metadata']['name']);
+        self::assertSame('^8.0', $index['packages'][0]['metadata']['require']['php']);
+        self::assertSame($manifest['layers'][0]['digest'], $index['packages'][0]['archive']);
+        self::assertCount(1, $manifest['layers']);
+        self::assertSame('sha256:'.hash('sha256', $artifact['config']), $manifest['config']['digest']);
+        self::assertSame(OciRegistry::INDEX_TYPE, $manifest['config']['mediaType']);
+    }
+    public function testIndexCanBeDisabled(): void
+    {
+        self::assertCount(1, $this->repository([], false, false, false)->getPackages());
     }
 
 }

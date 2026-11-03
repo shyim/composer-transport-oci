@@ -44,6 +44,17 @@ try:
         def composer(cmd):
             result=subprocess.run([os.environ.get('COMPOSER_BINARY', '/usr/bin/composer'),cmd,'--no-interaction','--no-progress','--no-scripts'],cwd=project,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
             if result.returncode: raise RuntimeError(result.stdout)
+        (root/'home').mkdir(exist_ok=True)
+        (root/'home'/'config.json').write_text(json.dumps({'config':{'secure-http':False}}))
+        def publish_index():
+            output=root/('index-'+name)
+            tool=pathlib.Path(__file__).resolve().parent.parent/'tools'/'build-index.php'
+            result=subprocess.run(['php',str(tool),base+'/'+repo,str(output)],env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+            if result.returncode: raise RuntimeError(result.stdout)
+            index_manifest=json.loads((output/'manifest.json').read_text())
+            descriptor=blob(repo,(output/'index.json').read_bytes(),'application/vnd.composer.repository.v1+json')
+            assert descriptor==index_manifest['config']
+            req(base+'/v2/'+repo+'/manifests/composer-index',(output/'manifest.json').read_bytes(),'PUT',{'Content-Type':index_manifest['mediaType']}).read()
         composer('update')  # Bootstrap the plugin before resolving OCI dependencies.
         config['extra']={'oci-repositories':[base+'/'+repo]}
         config['require'][repo]='^1.2'
@@ -58,15 +69,18 @@ try:
         composer('install')
         result=subprocess.check_output(['php','-r','require "vendor/autoload.php"; echo oci_test_value();'],cwd=project,text=True)
         assert result=='OCI works',result
+        publish_index()
+        composer('update')  # Read the index instead of enumerating release tags.
         upgraded=json.loads(metadata); upgraded['version']='1.3.0'
         manifest['config']=blob(repo,json.dumps(upgraded).encode(),'application/vnd.composer.package.v1+json')
         req(base+'/v2/'+repo+'/manifests/1.3.0',json.dumps(manifest).encode(),'PUT',{'Content-Type':manifest['mediaType']}).read()
+        publish_index()  # Move the index tag after publishing a new release.
         composer('update')
         assert next(p for p in json.loads((project/'composer.lock').read_text())['packages'] if p['name']==repo)['version']=='1.3.0'
         del config['require'][repo]
         (project/'composer.json').write_text(json.dumps(config))
         composer('update')
         assert not (project/'vendor'/repo).exists()
-        print(ext+': update, digest lock, uncached locked install, autoload, upgrade and removal PASS')
+        print(ext+': update, digest lock, uncached locked install, autoload, indexed resolution, index refresh, upgrade and removal PASS')
 finally:
     shutil.rmtree(root)

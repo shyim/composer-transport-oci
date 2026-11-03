@@ -26,6 +26,8 @@ class OciRegistry
 {
     public const MANIFEST_TYPE = 'application/vnd.oci.image.manifest.v1+json';
     public const CONFIG_TYPE = 'application/vnd.composer.package.v1+json';
+    public const INDEX_TYPE = 'application/vnd.composer.repository.v1+json';
+    public const INDEX_TAG = 'composer-index';
 
     /** @var HttpDownloader */
     private $http;
