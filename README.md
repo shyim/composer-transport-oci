@@ -1,23 +1,60 @@
-# Composer OCI transport plugin
+<p align="center">
+  <img src="https://raw.githubusercontent.com/shyim/composer-transport-oci/main/.github/assets/banner.svg" alt="Composer packages. OCI registries. Publish with ORAS. Install with Composer." width="100%">
+</p>
 
-Install PHP packages directly from OCI registries using stock Composer 2.9+ and
-PHP 8.1+. Includes `oci://` URLs, digest verification, ZIP/TAR/TAR.GZ archives,
-Docker credential helpers and locked installs. No Composer core patch is needed.
+<p align="center">
+  <a href="https://packagist.org/packages/shyim/composer-transport-oci"><img src="https://img.shields.io/badge/Packagist-composer--transport--oci-f28d1a?logo=packagist&logoColor=white" alt="Packagist"></a>
+  <img src="https://img.shields.io/badge/PHP-8.1%2B-777bb4?logo=php&logoColor=white" alt="PHP 8.1 or newer">
+  <img src="https://img.shields.io/badge/Composer-2.9%2B-885630?logo=composer&logoColor=white" alt="Composer 2.9 or newer">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-67e8f9" alt="MIT license"></a>
+</p>
 
-## Installation
+**Publish Composer packages to any compatible OCI registry—such as GitHub Container Registry—and install them with Composer.**
 
-This repository is private and the package is not published on Packagist.
-Authenticate with GitHub using an account that has access, then run these commands
-from your consuming project:
+Push your release archives with [ORAS](https://oras.land/). This plugin lets Composer discover their versions, resolve dependencies, and install them from `oci://` URLs. Public libraries, private packages, and built release ZIPs can all use the same registry infrastructure as your containers.
+
+- **Standard registry storage.** Package metadata and archives are OCI artifacts.
+- **Normal Composer dependencies.** Keep your constraints, autoloading, and lock file.
+- **Fast version lookup.** An optional index covers every release in two reads, or one with a warm cache, plus authentication.
+- **Verified downloads.** SHA-256 checks protect metadata, archives, and cached content.
+- **Existing credentials.** Use Composer authentication or credentials saved by `docker login`, including Docker credential helpers.
+
+## Install the plugin
+
+Requires **PHP 8.1+** and **Composer 2.9+**.
 
 ```sh
-composer config repositories.oci-plugin vcs https://github.com/shyim/composer-transport-oci
 composer config allow-plugins.shyim/composer-transport-oci true
-composer require shyim/composer-transport-oci:dev-main
+composer require shyim/composer-transport-oci
 ```
 
-Install the plugin **before** adding OCI dependencies for the first update.
-Then add registry paths and require packages:
+Install the plugin before adding your first OCI dependency. Keep it in `require` so production installs can use it too. Fresh installs from a lock file activate the plugin before downloading OCI packages.
+
+## Publish a package
+
+Start with your release archive, `package.zip`, and its `composer.json`. Create metadata for the version you are publishing:
+
+```sh
+jq '. + {version: "1.0.0"}' composer.json > package-metadata.json
+```
+
+This preserves the package's name, dependencies, autoload configuration, and other Composer metadata. Then push both files to your registry:
+
+```sh
+oras login ghcr.io
+
+oras push ghcr.io/acme/library:1.0.0 \
+  --config package-metadata.json:application/vnd.composer.package.v1+json \
+  package.zip:application/zip
+```
+
+Replace `ghcr.io/acme/library` with your own registry and package path. Each OCI repository holds the releases of **one Composer package**. The Composer name comes from `composer.json`; it does not have to match the registry path.
+
+ZIP, TAR, and gzip-compressed TAR archives are supported. See the [artifact format](docs/artifact-format.md) for media types and archive requirements.
+
+## Install from your registry
+
+Add the registry path to your project's `composer.json`:
 
 ```json
 {
@@ -25,203 +62,67 @@ Then add registry paths and require packages:
         "oci-repositories": [
             "oci://ghcr.io/acme/library"
         ]
-    },
-    "require": {
-        "shyim/composer-transport-oci": "dev-main",
-        "acme/library": "^1.2"
     }
 }
 ```
 
-Run `composer update`. Keep the plugin in `require`, including in production.
-On a fresh `composer install`, `plugin-modifies-downloads` makes Composer install
-and activate it before downloading OCI dependencies. `--no-plugins` disables OCI
-support. Consumers need access to this private GitHub repository. For local development,
-replace the VCS entry with a path repository pointing to your checkout.
+Then require the package by its Composer name:
 
-Composer constructs its ordinary `repositories` before activating plugins, so
-use `extra.oci-repositories`, **not** a top-level `type: oci` repository. Entries
-may be URL strings or objects with `url`, `canonical`, `only`, `exclude` and `index`:
+```sh
+composer require acme/library:^1.0
+```
+
+`oci://` connects over HTTPS. Private registries use your [Composer or Docker credentials](docs/authentication.md). The resulting lock file pins the archive's content digest, so moving a release tag does not change an existing locked install.
+
+Use `extra.oci-repositories` because Composer loads its ordinary repository definitions before activating plugins. No custom Composer build is needed.
+
+### Repository options
+
+Entries can be URL strings or objects:
 
 ```json
 {
     "extra": {
         "oci-repositories": [
-            {"url": "oci://ghcr.io/acme/library", "only": ["acme/library"]}
+            {
+                "url": "oci://ghcr.io/acme/library",
+                "only": ["acme/library"],
+                "canonical": true
+            }
         ]
     }
 }
 ```
 
-OCI repositories are prepended in configured order and are canonical by default.
-Each path contains the tagged versions of one package. A bare `oci://ghcr.io`
-is insufficient. `oci://` uses HTTPS; explicit HTTPS and HTTP URLs are accepted.
-Metadata supplies the package name and version. Alias tags are deduplicated;
-conflicting artifacts for one version are rejected. Registry catalogs and image
-indexes are not supported.
+Repositories take priority in the order listed and are canonical by default. `only` and `exclude` filter package names. Set `index` to `false` to force individual release-tag discovery.
 
-## Fast version discovery
+## Fast, even with years of releases
 
-By default, the plugin checks the reserved `composer-index` tag first. If it is
-absent (HTTP 404), it falls back to listing and reading individual release tags.
-Authentication failures, server errors and corrupt indexes are reported rather
-than silently falling back.
+Publish a `composer-index` artifact alongside your releases to make version discovery independent of the number of tags. It contains all Composer metadata and references the existing archive blobs.
 
-The index is an OCI image manifest with config media type
-`application/vnd.composer.repository.v1+json`. Its config blob contains all
-Composer versions and dependency/autoload metadata:
+| FroshTools: 120 releases on GHCR | Resolution time |
+| --- | ---: |
+| Individual release discovery | 40.6 s |
+| Index, cold local cache | **2.3 s** |
+| Index, warm local cache | **1.8 s** |
 
-```json
-{
-    "schemaVersion": 1,
-    "packages": [
-        {
-            "metadata": {"name": "acme/library", "version": "1.2.3"},
-            "archive": "sha256:<archive digest>"
-        }
-    ]
-}
-```
+Single-run measurements from the same development environment, including registry authentication. Shopware and Symfony dependencies were treated as already satisfied to isolate OCI lookup time.
 
-Each `archive` digest must refer to a ZIP or TAR layer descriptor in the index
-manifest. Layers reuse the existing release blobs; no archive content is
-rewritten or duplicated. These references also keep the indexed archives
-reachable for registry garbage collection. Locks still point directly to archive
-blobs and do not depend on the mutable index tag.
+**Refresh the index after publishing or removing releases.** Repositories without an index work through automatic tag discovery. The [index guide](docs/index.md) includes the builder, publishing commands, cache behavior, and format.
 
-A cold lookup reads the manifest and one metadata blob, independent of the number
-of versions. Subsequent runs re-read the manifest and reuse a verified blob from
-Composer's repository cache when the digest is unchanged. Authentication may add
-requests. The cache key includes the registry/repository and SHA-256 digest;
-changed indexes are picked up on the next update, and corrupt cached blobs are
-fetched again. Authentication is checked before using cached metadata.
+## Registry compatibility
 
-For the 120 FroshTools releases on GHCR, one measured Composer dry run went from
-40.6 seconds scanning tags to 2.3 seconds with a cold index cache and 1.8 seconds
-with a warm cache. These measurements include registry authentication and isolate
-OCI lookup overhead by treating Shopware and Symfony as already satisfied; they
-are not full Shopware installation timings.
+The artifact format uses OCI image manifests, blobs, and the Distribution API. It is designed for OCI-compatible registries that support custom artifact media types. **GHCR and a local CNCF Distribution registry have been tested**, including real downloads and locked installs.
 
-### Publishing an index
+Registry authentication policies still apply. For registries with a separate token-service hostname, see the [authentication guide](docs/authentication.md).
 
-After pushing your release archives, run this tool from a development checkout
-with `composer install` completed. It uses Composer or Docker credentials:
+## Documentation
 
-```sh
-php tools/build-index.php oci://ghcr.io/acme/library ./index
-oras blob push ghcr.io/acme/library ./index/index.json
-oras manifest push ghcr.io/acme/library:composer-index ./index/manifest.json \
-  --media-type application/vnd.oci.image.manifest.v1+json
-```
+- [Artifact format](docs/artifact-format.md) — package metadata, archive types, and digest verification.
+- [Version index](docs/index.md) — build and publish an index for fast lookups.
+- [Authentication and limitations](docs/authentication.md) — Docker helpers, private registries, and supported behavior.
+- [Development and testing](docs/development.md) — unit tests, static analysis, and registry integration checks.
 
-The builder scans release tags and validates their metadata. It does not download
-archives. Upload the config blob first, then replace the index manifest tag; this
-makes the complete new snapshot visible at once. Serialize publishers to avoid
-replacing a newer snapshot with an older one.
+## License
 
-**The index is authoritative.** Rebuild and publish it after adding, changing or
-removing releases. New tags are invisible to indexed clients until then. To
-force discovery from individual tags for a stale index or debugging:
-
-```json
-{"url": "oci://ghcr.io/acme/library", "index": false}
-```
-
-Older plugin versions can still scan the release tags and ignore the index
-artifact. Keep release tags if those clients must remain supported.
-
-## Composer artifact format (version 1)
-
-Use an OCI image manifest (`application/vnd.oci.image.manifest.v1+json`) with:
-
-* `schemaVersion` set to `2`.
-* A `config` descriptor with media type
-  `application/vnd.composer.package.v1+json`. Its blob contains the package's
-  `composer.json`, including explicit `name` and `version` fields and its normal
-  dependency, autoload and other package metadata.
-* Exactly one archive layer: `application/zip`, `application/x-tar`, or
-  `application/gzip` (a gzip-compressed TAR archive). The archive follows the
-  same layout as ordinary Composer distribution archives.
-* SHA-256 digests and byte sizes on both descriptors.
-
-This is a Composer-specific artifact convention, not an existing OCI standard.
-It uses the [OCI artifact guidance](https://github.com/opencontainers/image-spec/blob/main/artifacts-guidance.md)
-and [Distribution API](https://github.com/opencontainers/distribution-spec/blob/main/spec.md).
-If `artifactType` is supplied, use `application/vnd.composer.package.v1+json`.
-
-For example, with a versioned `composer.json` and `package.zip`, publish using
-[ORAS](https://oras.land/docs/commands/oras_push/):
-
-```shell
-oras push registry.example.com/php/acme/library:1.2.3 \
-  --config composer.json:application/vnd.composer.package.v1+json \
-  package.zip:application/zip
-```
-
-Composer verifies the metadata descriptor's size and digest, and verifies the
-archive SHA-256 before extraction, including cached archives. The lock file
-contains an `oci-zip` or `oci-tar` distribution pointing directly to an immutable
-blob digest. Moving or deleting tags does not affect locked installs as long as
-the referenced blob remains available. Registry garbage collection can still
-remove unreferenced blobs. Source and transport overrides embedded in metadata
-are ignored. These lock files require this plugin.
-
-## Authentication and limitations
-
-Explicit Composer `auth.json` credentials take precedence. Otherwise OCI requests
-read `$DOCKER_CONFIG/config.json`, or `~/.docker/config.json` when `DOCKER_CONFIG`
-is unset. Docker's per-registry `credHelpers` take precedence over `credsStore`,
-which takes precedence over inline `auths` entries. Configured helpers are invoked
-as `docker-credential-<name> get`, with the registry address on stdin, following
-[Docker's credential helper protocol](https://docs.docker.com/reference/cli/docker/login/#credential-helper-protocol).
-The helper must be available on `PATH`; Docker itself need not be installed.
-Unconfigured platform-default helpers are not auto-detected.
-
-For example, credentials saved by `docker login ghcr.io` are available to an
-`oci://ghcr.io/acme/library` repository, including when installing from a lock file.
-The config and credential stores are read only; credentials are not copied into
-Composer's `auth.json`, package metadata or lock files. Missing credentials allow
-anonymous access. Malformed configuration, a missing configured helper, or helper
-failures produce an error without including helper output or secrets.
-
-Registry Bearer challenges request repository-scoped `pull` tokens. Docker
-identity tokens (including a helper's `<token>` username) use the OAuth refresh
-token exchange. A separate token-service hostname needs its own credentials;
-registry secrets are not forwarded to arbitrary hosts. Docker Hub's known
-`auth.docker.io` service uses the Docker Hub registry credentials. Explicit
-Composer credentials for the token service still take precedence. Token endpoints
-must use HTTPS. Acquired tokens stay in memory.
-
-HTTP registries require the normal `secure-http` configuration exception and
-should be limited to local development. Downloads currently run synchronously,
-use a verified archive cache, and delegate extraction to Composer. File-download
-plugin events apply to the verified local archive; they do not intercept the OCI
-registry transfer. The index manifest is refreshed during resolution; its immutable metadata blob
-is cached. Repositories without an index still scan individual tags. Locked
-installs need only the archive blob. Publishing, signing and signature verification are outside
-this repository type's scope.
-
-
-## Development and validation
-
-```sh
-composer install
-composer test
-composer analyse
-```
-
-Unit tests cover authentication precedence, helper execution, token challenges,
-metadata and archive integrity, cache recovery, and plugin activation. The local
-integration check uses a disposable Distribution registry and stock Composer:
-
-```sh
-docker run -d --rm -p 127.0.0.1::5000 --name composer-oci-plugin-validation registry:2
-python3 tests/integration.py
-docker stop composer-oci-plugin-validation
-```
-
-Set `COMPOSER_BINARY` to an executable Composer release to test another version.
-For an htpasswd-protected registry with username `test`, set `OCI_TEST_PASSWORD`;
-the check creates a temporary Docker credential helper and verifies update,
-uncached locked install, autoloading and absence of secrets/local URLs in the lock
-file for all three archive formats. Nothing is published to a hosted registry.
+[MIT](LICENSE).

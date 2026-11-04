@@ -1,6 +1,6 @@
 {
     "name": "shyim/composer-transport-oci",
-    "description": "Install Composer packages from OCI registries",
+    "description": "Publish Composer packages to OCI registries and install them with Composer.",
     "type": "composer-plugin",
     "license": "MIT",
     "require": {
@@ -35,5 +35,20 @@
         "platform": {
             "php": "8.1.0"
         }
+    },
+    "keywords": [
+        "composer",
+        "composer-plugin",
+        "oci",
+        "registry",
+        "ghcr",
+        "packages",
+        "distribution"
+    ],
+    "homepage": "https://github.com/shyim/composer-transport-oci",
+    "support": {
+        "issues": "https://github.com/shyim/composer-transport-oci/issues",
+        "source": "https://github.com/shyim/composer-transport-oci",
+        "docs": "https://github.com/shyim/composer-transport-oci#readme"
     }
 }
