@@ -22,4 +22,11 @@ the check creates a temporary Docker credential helper and verifies update,
 uncached locked install, autoloading and absence of secrets/local URLs in the lock
 file for all three archive formats. Nothing is published to a hosted registry.
 
+GitHub Actions runs unit tests on PHP 8.1–8.5 and static analysis on PHP 8.5.
+The OCI integration matrix tests Composer 2.9.0 and the latest Composer 2 release
+against anonymous and password-protected disposable registries. The protected
+registry exercises Docker credential helpers; CI needs no registry secrets and
+publishes nothing externally. Workflows run on pull requests and pushes to main,
+and can also be started manually. Actions are pinned to release commit hashes.
+
 [Back to the README](../README.md)

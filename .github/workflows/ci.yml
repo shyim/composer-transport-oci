@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: PHP ${{ matrix.php }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.1', '8.2', '8.3', '8.4', '8.5']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: curl, mbstring, zip
+          coverage: none
+          tools: composer:v2
+      - run: composer validate --strict
+      - run: composer install --prefer-dist --no-interaction --no-progress
+      - run: composer check-platform-reqs
+      - run: composer test
+      - name: Static analysis
+        if: matrix.php == '8.5'
+        run: vendor/bin/phpstan analyse src tools --level=5 --no-progress
+
+  integration:
+    name: OCI / Composer ${{ matrix.composer }} / ${{ matrix.auth }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        composer: ['2.9.0', 'v2']
+        auth: [anonymous, helper]
+    env:
+      OCI_TEST_CONTAINER: composer-oci-plugin-validation
+      # Disposable fixture credential; no registry account or secrets required.
+      OCI_TEST_PASSWORD: ${{ matrix.auth == 'helper' && 'oci-integration-password' || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.5'
+          extensions: curl, mbstring, zip
+          coverage: none
+          tools: composer:${{ matrix.composer }}
+      - run: composer install --prefer-dist --no-interaction --no-progress
+      - name: Start disposable registry
+        shell: bash
+        run: |
+          args=()
+          if [[ -n "$OCI_TEST_PASSWORD" ]]; then
+            mkdir -p "$RUNNER_TEMP/registry-auth"
+            php -r 'file_put_contents(getenv("RUNNER_TEMP")."/registry-auth/htpasswd", "test:".password_hash(getenv("OCI_TEST_PASSWORD"), PASSWORD_BCRYPT, ["cost" => 4])."\n");'
+            args=(-v "$RUNNER_TEMP/registry-auth:/auth:ro"
+              -e REGISTRY_AUTH=htpasswd
+              -e REGISTRY_AUTH_HTPASSWD_REALM=ComposerOCI
+              -e REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd)
+          fi
+          docker run -d --rm -p 127.0.0.1::5000 --name "$OCI_TEST_CONTAINER" "${args[@]}" registry:2
+          port=$(docker port "$OCI_TEST_CONTAINER" 5000/tcp | head -n 1 | awk -F: '{print $NF}')
+          curl --fail --silent --show-error --retry 10 --retry-connrefused --retry-delay 1 \
+            --user "test:$OCI_TEST_PASSWORD" "http://127.0.0.1:$port/v2/"
+      - name: Exercise archives, locked installs, indexes and credential helpers
+        run: COMPOSER_BINARY="$(command -v composer)" python3 tests/integration.py
+      - name: Registry logs
+        if: failure()
+        run: docker logs "$OCI_TEST_CONTAINER"
+      - name: Stop registry
+        if: always()
+        run: docker rm -f "$OCI_TEST_CONTAINER"
